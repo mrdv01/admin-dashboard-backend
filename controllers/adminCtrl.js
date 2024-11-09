@@ -1,4 +1,4 @@
-import dbConnect from "../config/dbConnect.js";
+import dbConnect from "../config/dbConnect.js";  // This will now import the Supabase client
 
 // GET all blogs
 export const getBlogs = async (req, res) => {
@@ -9,8 +9,18 @@ export const getBlogs = async (req, res) => {
         const offset = (page - 1) * limit;
 
         // Query to fetch paginated blogs
-        const query = `SELECT * FROM blogs LIMIT ? OFFSET ?`;
-        const [data] = await dbConnect.query(query, [limit, offset]);
+        const { data, error } = await dbConnect
+            .from('blogs') // The table name
+            .select('*')
+            .range(offset, offset + limit - 1); // Implementing OFFSET and LIMIT
+
+        if (error) {
+            return res.status(500).json({
+                success: false,
+                message: "Error fetching blogs",
+                error: error.message
+            });
+        }
 
         // If no records found
         if (!data.length) {
@@ -21,8 +31,19 @@ export const getBlogs = async (req, res) => {
         }
 
         // Query to get the total count of blogs for pagination metadata
-        const [totalCount] = await dbConnect.query(`SELECT COUNT(*) as count FROM blogs`);
-        const totalBlogs = totalCount[0].count;
+        const { data: totalCountData, error: totalCountError } = await dbConnect
+            .from('blogs')
+            .select('id', { count: 'exact' });
+
+        if (totalCountError) {
+            return res.status(500).json({
+                success: false,
+                message: "Error fetching total count",
+                error: totalCountError.message
+            });
+        }
+
+        const totalBlogs = totalCountData.length;
         const totalPages = Math.ceil(totalBlogs / limit);
 
         // Return paginated data along with metadata
@@ -42,55 +63,51 @@ export const getBlogs = async (req, res) => {
         res.status(500).json({
             success: false,
             message: 'Error in getting all blogs',
-            error,
+            error: error.message,
         });
     }
 };
 
-
-//Get single blog
-
+// Get single blog
 export const getSingleBlog = async (req, res) => {
     try {
         const { id } = req.params;
 
-        const data = await dbConnect.query(`SELECT * FROM blogs WHERE id =?`, [id]);
-        if (!data) {
+        const { data, error } = await dbConnect
+            .from('blogs')
+            .select('*')
+            .eq('id', id)
+            .single();  // `.single()` returns only the first row (single blog)
+
+        if (error) {
             return res.status(404).json({
                 success: false,
-                message: "no record found"
-            })
+                message: "No record found"
+            });
         }
 
         res.status(200).json({
             success: true,
-            message: "blog successfully fetched",
-            data: data[0],
-        })
+            message: "Blog successfully fetched",
+            data: data,
+        });
     } catch (error) {
         console.log(error);
         res.status(500).json({
             success: false,
-            message: 'Error in Get single blog',
-            error,
-        })
+            message: 'Error in getting single blog',
+            error: error.message,
+        });
     }
-}
+};
 
-
-// create blog
+// Create blog
+// controllers/blogController.js
 export const createBlog = async (req, res) => {
     try {
-        const {
-            title,
-            content,
-            image_url,
-            video_url,
-            meta_title,
-            meta_description,
-            tags,
-            status } = req.body;
-        // Validate input fields (ensure title and content are provided)
+        const { title, content, image_url, video_url, meta_title, meta_description, tags, status } = req.body;
+
+        // Validate input fields
         if (!title || !content) {
             return res.status(400).json({
                 success: false,
@@ -98,68 +115,75 @@ export const createBlog = async (req, res) => {
             });
         }
 
-        const query = `
-        INSERT INTO blogs (title, content, image_url, video_url, meta_title, 
-            meta_description, tags, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `;
+        // Ensure the tags field is an array (if provided)
+        const tagsArray = tags ? (Array.isArray(tags) ? tags : tags.split(',').map(tag => tag.trim())) : [];
 
-        const values = [
+        // Create the blog object
+        const blogData = {
             title,
             content,
-            image_url || null,  // Optional field for image URL
-            video_url || null,  // Optional field for video URL
-            meta_title || null, // Optional field for meta title
-            meta_description || null, // Optional field for meta description
-            tags || null, // Optional field for tags
-            status || 'draft', // Default status is 'draft'
-        ];
+            image_url: image_url || null,
+            video_url: video_url || null,
+            meta_title: meta_title || null,
+            meta_description: meta_description || null,
+            tags: tagsArray,
+            status: status || 'draft',
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+        };
 
-        const data = await dbConnect.query(query, values)
+        // Insert the blog into the database
+        const { data, error } = await dbConnect
+            .from('blogs')
+            .insert([blogData])
+            .select(); // Add .select() to return the inserted data
 
-        if (!data) {
-            return res.status(404).json({
+        // Log for debugging
+        console.log("Request Body:", req.body);
+        console.log("Processed Blog Data:", blogData);
+        console.log("Supabase Response:", { data, error });
+
+        if (error) {
+            return res.status(500).json({
                 success: false,
-                message: "error in insert query"
-            })
+                message: "Error creating blog",
+                error: error.message
+            });
+        }
+
+        // Check if data was returned
+        if (!data || data.length === 0) {
+            return res.status(500).json({
+                success: false,
+                message: "Blog creation failed, no data returned",
+                debug: { blogData, supabaseResponse: { data, error } }
+            });
         }
 
         res.status(201).json({
             success: true,
-            message: 'new blog successfully created',
-            blogId: data[0].insertId,
-        })
+            message: 'New blog successfully created',
+            blog: data[0]
+        });
 
     } catch (error) {
-
-        console.log(error);
+        console.error("Server Error:", error);
         res.status(500).json({
             success: false,
             message: 'Error in creating blog',
-            error,
-        })
+            error: error.message,
+            stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+        });
     }
 };
 
 
 export const updateBlog = async (req, res) => {
     try {
-        // Get blog ID from URL parameters
         const { id } = req.params;
+        const { title, content, image_url, video_url, meta_title, meta_description, tags, status } = req.body;
 
-        // Get updated fields from request body
-        const {
-            title,
-            content,
-            image_url,
-            video_url,
-            meta_title,
-            meta_description,
-            tags,
-            status
-        } = req.body;
-
-        // Check if ID is provided
+        // Ensure the blog ID is provided
         if (!id) {
             return res.status(400).json({
                 success: false,
@@ -167,66 +191,72 @@ export const updateBlog = async (req, res) => {
             });
         }
 
-        // Prepare SQL query for updating the blog post
-        const query = `
-            UPDATE blogs SET 
-                title = COALESCE(?, title),
-                content = COALESCE(?, content),
-                image_url = COALESCE(?, image_url),
-                video_url = COALESCE(?, video_url),
-                meta_title = COALESCE(?, meta_title),
-                meta_description = COALESCE(?, meta_description),
-                tags = COALESCE(?, tags),
-                status = COALESCE(?, status),
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-        `;
+        // Handle tags properly based on input type
+        let tagsArray;
+        if (tags) {
+            if (typeof tags === 'string') {
+                // If tags is a string, split it
+                tagsArray = tags.split(',').map(tag => tag.trim());
+            } else if (Array.isArray(tags)) {
+                // If tags is already an array, use it directly
+                tagsArray = tags;
+            } else {
+                // If tags is neither string nor array, set to null
+                tagsArray = null;
+            }
+        } else {
+            tagsArray = null;
+        }
 
-        const values = [
-            title || null,
-            content || null,
-            image_url || null,
-            video_url || null,
-            meta_title || null,
-            meta_description || null,
-            tags || null,
-            status || 'draft',
-            id
-        ];
+        // Update the blog in the database
+        const { data, error } = await dbConnect
+            .from('blogs')
+            .update({
+                title: title || null,
+                content: content || null,
+                image_url: image_url || null,
+                video_url: video_url || null,
+                meta_title: meta_title || null,
+                meta_description: meta_description || null,
+                tags: tagsArray,
+                status: status || 'draft',
+            })
+            .eq('id', id)
+            .select();
 
-        // Execute the query
-        const [result] = await dbConnect.query(query, values);
+        if (error) {
+            return res.status(500).json({
+                success: false,
+                message: "Error updating blog",
+                error: error.message || error.details,
+            });
+        }
 
-        // Check if the blog was found and updated
-        if (result.affectedRows === 0) {
+        if (!data || data.length === 0) {
             return res.status(404).json({
                 success: false,
                 message: 'Blog not found or no changes made',
             });
         }
 
-        // Respond with a success message
         res.status(200).json({
             success: true,
             message: 'Blog updated successfully',
         });
-
     } catch (error) {
-        console.error(error);
+        console.log(error);
         res.status(500).json({
             success: false,
             message: 'Error in updating blog',
-            error,
+            error: error.message || error.details,
         });
     }
 };
-
 
 export const deleteBlog = async (req, res) => {
     try {
         const { id } = req.params;
 
-        // Check if ID is provided
         if (!id) {
             return res.status(400).json({
                 success: false,
@@ -234,30 +264,44 @@ export const deleteBlog = async (req, res) => {
             });
         }
 
-        // SQL query to delete the blog post
-        const query = `DELETE FROM blogs WHERE id = ?`;
-        const [result] = await dbConnect.query(query, [id]);
+        // First check if blog exists
+        const { data: existingBlog } = await dbConnect
+            .from('blogs')
+            .select()
+            .eq('id', id)
+            .single();
 
-        // Check if the blog post was found and deleted
-        if (result.affectedRows === 0) {
+        if (!existingBlog) {
             return res.status(404).json({
                 success: false,
                 message: 'Blog not found',
             });
         }
 
-        // Respond with a success message
+        // If blog exists, proceed with deletion
+        const { error } = await dbConnect
+            .from('blogs')
+            .delete()
+            .eq('id', id);
+
+        if (error) {
+            return res.status(500).json({
+                success: false,
+                message: "Error deleting blog",
+                error: error.message
+            });
+        }
+
         res.status(200).json({
             success: true,
             message: 'Blog deleted successfully',
         });
-
     } catch (error) {
-        console.error(error);
+        console.log(error);
         res.status(500).json({
             success: false,
             message: 'Error in deleting blog',
-            error,
+            error: error.message,
         });
     }
 };
